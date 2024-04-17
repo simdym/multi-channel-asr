@@ -4,4 +4,5 @@
 # LICENSE file in the root directory of this source tree.
 
 from .speech_dlm import *  # noqa
+from .speech_dlm_for_asr import *  # noqa
 from .hub_interface import *  # noqa
