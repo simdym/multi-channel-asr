@@ -6,6 +6,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Optional
 import torch
+import torch.nn.functional as F
 
 from fairseq import utils
 from fairseq import hub_utils
@@ -150,6 +151,9 @@ class SpeechDLMForASRConfig(FairseqDataclass):
     blank_mode: str = field(
         default="add", metadata={"help": "how to apply the blank weight"}
     )
+    apply_causal_mask: bool = field(
+        default=False, metadata={"help": "apply a casual mask to the attention scores"}
+    )
 
 
 @register_model("speech_dlm_for_asr", dataclass=SpeechDLMForASRConfig)
@@ -170,16 +174,16 @@ class SpeechDLMForASR(FairseqEncoderModel):
         Args:
             src_tokens (Dict[str, torch.LongTensor]): tokens in the source language of shape
                 `(batch, src_len)`
+            src_lengths (Dict[str, torch.Tensor]): source sentence lengths of shape `(batch)`
 
         Returns:
             encoder output of shape `(batch, src_len, features)`
         """
         return self.encoder(src_tokens, src_lengths, **kwargs)
     
-    def prepare_logits(self, logits: Dict[str, torch.Tensor]):
+    def prepare_logits(self, logits: Dict[str, torch.Tensor], padding_mask: Optional[torch.Tensor] = None):
         """
-        Adds a weight to the blank token in the logits
-        and TODO deals with padding
+        Adds a weight to the blank token in the logits, and applies a padding mask if provided.
         """
         if self.blank_weight != 0:
             if self.blank_mode == "add":
@@ -189,27 +193,29 @@ class SpeechDLMForASR(FairseqEncoderModel):
             else:
                 raise Exception(f"invalid blank mode {self.blank_mode}")
 
-        """if net_output["padding_mask"] is not None and net_output["padding_mask"].any():
+        if padding_mask is not None and padding_mask.any():
             number_of_classes = logits.size(-1)
             masking_tensor = torch.ones(
                 number_of_classes, device=logits.device
             ) * float("-inf")
             masking_tensor[0] = 0
 
-            if logits.size(0) > net_output["padding_mask"].size(1):
-                net_output["padding_mask"] = F.pad(
-                    net_output["padding_mask"], (1, 0), value=False
+            if logits.size(0) > padding_mask.size(1):
+                padding_mask = F.pad(
+                    padding_mask, (1, 0), value=False
                 )
 
-            logits[net_output["padding_mask"].T] = masking_tensor.type_as(logits)"""
+            logits[padding_mask.T] = masking_tensor.type_as(logits)
 
         return logits
     
-    def get_normalized_probs(self, output_dict: Dict[str, torch.Tensor], log_probs: bool) -> Dict[str, torch.Tensor]:
+    def get_normalized_probs(self, output_dict: Dict[str, torch.Tensor], padding_mask: torch.Tensor, log_probs: bool) -> Dict[str, torch.Tensor]:
         """Get normalized probabilities (or log probs) from a net's output.
         
         Args:
             output_dict (Dict[str, torch.Tensor]): the output from the model
+            padding_mask (Optional[torch.Tensor]): the padding mask to apply to the logits. It is the same
+                for all channels, so it is passed as a single tensor
             log_probs (bool): whether to return log probabilities or not
         
         Returns:
@@ -217,7 +223,7 @@ class SpeechDLMForASR(FairseqEncoderModel):
         """
         logits_dict = {}
         for channel, channel_output in output_dict.items():
-            logits = self.prepare_logits(channel_output)
+            logits = self.prepare_logits(channel_output, padding_mask)
 
             if log_probs:
                 logits_dict[channel] = utils.log_softmax(logits.float(), dim=-1)
@@ -307,10 +313,7 @@ class SpeechDLMForASR(FairseqEncoderModel):
         from fairseq.tasks.speech_dlm_for_asr_task import SpeechDLMForASRTaskConfig
         import copy
 
-        if copy_args:
-            dgslm_model_cfg = copy.deepcopy(dgslm_args)
-        else:
-            dgslm_model_cfg = dgslm_args
+        dgslm_model_cfg = copy.deepcopy(dgslm_args)
 
         # Model args:
         model_cfg = OmegaConf.structured(SpeechDLMForASRConfig())
@@ -413,78 +416,3 @@ def base_lm_architecture(args):
     args.offload_activations = getattr(args, "offload_activations", False)
     if args.offload_activations:
         args.checkpoint_activations = True
-
-
-if __name__ == "__main__":
-    from fairseq.dataclass.configs import FairseqConfig, CommonConfig
-    from fairseq.criterions.speech_dlm_criterion import SpeechDLMCriterionConfig
-    from fairseq.tasks.speech_dlm_for_asr_task import SpeechDLMForASRTaskConfig
-    from omegaconf import OmegaConf
-
-
-    cfg = OmegaConf.structured(
-        FairseqConfig()
-    )
-
-    common_cfg = OmegaConf.create(
-        CommonConfig()
-    )
-
-    criterion_cfg = OmegaConf.create(
-        SpeechDLMCriterionConfig()
-    )
-
-    model_cfg = OmegaConf.create(
-        SpeechDLMForASRConfig()
-    )
-    #model_cfg.decoder_layers = 6
-    #model_cfg.decoder_cross_layers = 4
-    model_cfg.build_from_dgslm = True
-    model_cfg.dgslm_path = "model_files"
-    model_cfg.dgslm_checkpoint_file = "speech_dlm_base.pt"
-    model_cfg._name = "model" #"speech_dlm_for_asr"
-
-    task_cfg = OmegaConf.create(
-        SpeechDLMForASRTaskConfig()
-    )
-    task_cfg.max_target_positions = 1024
-    task_cfg._name = "task" #"speech_dlm_for_asr_task"
-    task_cfg.input_dict_path = "model_files/dict.unitA.txt"
-    task_cfg.output_dict_path = "model_files/dict.ltr.txt"
-
-    cfg.common = common_cfg
-    cfg.criterion = criterion_cfg
-    cfg.model = model_cfg
-    cfg.task = task_cfg
-
-    task = SpeechDLMForASRTask.setup_task(cfg.task)
-    asr_model = SpeechDLMForASR.build_model(cfg.model, task)
-
-    batch_size = 10
-    src_len = 50
-    input_tensor = {
-        "0": torch.randint(0, 504, (batch_size, src_len)).long(),
-        "1": torch.randint(0, 504, (batch_size, src_len)).long()
-    }
-
-    print("Model params", sum(p.numel() for p in asr_model.parameters() if p.requires_grad))
-
-    output, other_stuff = asr_model.forward(input_tensor)
-    print(output.keys())
-    print(other_stuff.keys())
-    print("Forward ^^^^")
-
-
-    normalized_probs = asr_model.get_normalized_probs(
-        output,
-        log_probs=False
-    )
-
-    print(normalized_probs.keys())
-    
-    
-    """SpeechDLMForASR.from_pretrained_dgslm(
-        model_name_or_path="model_files",
-        checkpoint_file="speech_dlm_base.pt",
-        data_name_or_path="model_files"
-    )"""

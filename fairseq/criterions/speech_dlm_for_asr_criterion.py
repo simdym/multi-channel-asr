@@ -53,33 +53,8 @@ class SpeechDLMForASRCriterion(FairseqCriterion):
         net_input = sample["net_input"]
         net_target = sample["net_target"]
 
-        """print("ntokens", sample["ntokens"])
-        print("nsentences", sample["nsentences"])
-        print("src_len", net_input["src_lengths"].size())
-        print("src_tokens", net_input["src_tokens"]["0"].size())
-        print("tgt_len", net_target["tgt_lengths"]["0"].size())
-        print("tgt_tokens", net_target["tgt_tokens"]["0"].size())
-        print("src_len_nans", torch.isnan(net_input["src_lengths"]).sum())
-        print("src_nans", torch.isnan(net_input["src_tokens"]["0"]).sum())
-        print("tgt_len_nans", torch.isnan(net_target["tgt_lengths"]["0"]).sum())
-        print("tgt_nans", torch.isnan(net_target["tgt_tokens"]["0"]).sum())"""
-
-        #print("src_len / tgt_len", net_input["src_tokens"]["0"].size(-1) / net_target["tgt_tokens"]["0"].size(-1))
-
-        if torch.isnan(net_input["src_lengths"]).sum():
-            print("src_len_nans", torch.isnan(net_input["src_lengths"]).sum())
-
-        if torch.isnan(net_input["src_tokens"]["0"]).sum():
-            print("src_nans", torch.isnan(net_input["src_tokens"]["0"]).sum())
-        
-        if torch.isnan(net_target["tgt_lengths"]["0"]).sum():
-            print("tgt_len_nans", torch.isnan(net_target["tgt_lengths"]["0"]).sum())
-        
-        if torch.isnan(net_target["tgt_tokens"]["0"]).sum():
-            print("tgt_nans", torch.isnan(net_target["tgt_tokens"]["0"]).sum())
-
         # Forward pass
-        output, _ = model(**net_input)
+        output, extra_outputs = model(**net_input)
 
         sample_size = sample["ntokens"]
 
@@ -88,13 +63,13 @@ class SpeechDLMForASRCriterion(FairseqCriterion):
 
         # Calculate log probabilities
         lprobs = model.get_normalized_probs(
-            output, log_probs=True
+            output, extra_outputs["padding_mask"], log_probs=True
         )
 
         with torch.backends.cudnn.flags(enabled=False):
             loss = self.compute_loss(
                 lprobs, net_target["tgt_tokens"], net_input["src_lengths"], net_target["tgt_lengths"]
-            )# / sample_size
+            )
 
         logging_output = {
             "loss": utils.item(loss.data),

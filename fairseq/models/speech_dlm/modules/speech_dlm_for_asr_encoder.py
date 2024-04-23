@@ -15,6 +15,7 @@ from fairseq.models.speech_dlm.modules.speech_dlm_decoder_layer import (
 )
 from fairseq.modules.checkpoint_activations import checkpoint_wrapper
 from fairseq.data.dictionary import Dictionary
+from fairseq import utils
 
 from typing import Dict, List, Optional, Tuple
 
@@ -61,6 +62,8 @@ class CrossChannelTransformerEncoderForASR(FairseqEncoder):
         self.embed_tokens = embed_tokens
         self.channels = channels
         self.no_encoder_attn = no_encoder_attn
+        self.apply_casual_mask = args.apply_causal_mask
+        self._future_mask = torch.empty(0)
 
         self.dropout_module = FairseqDropout(
             args.dropout, module_name=self.__class__.__name__
@@ -231,10 +234,14 @@ class CrossChannelTransformerEncoderForASR(FairseqEncoder):
             Tuple(torch.Tensor, Dict[str, Optional[torch.Tensor]]): the encoder features of shape
                 `(src_len, batch, embed_dim)` and the extra dictionary with
                 the following optional items:
-                - "attn" (List[Dict[str, Optional[torch.Tensor]]]): a list of
-                    attention weights (one per layer) of shape `(batch, src_len, src_len)`
-                - "inner_states" (List[Dict[str, Optional[torch.Tensor]]]): a list of
-                    the intermediate decoder states (one per layer)
+                - "attn" (List[Dict[str, torch.Tensor]]): a list of
+                    attention weights
+                - "inner_states" (List[Dict[str, torch.Tensor]]): a list of
+                    the intermediate decoder states
+                - "self_attn_mask" (Dict[str, torch.Tensor]): a dict of
+                    self attention mask
+                - "padding_mask" (Dict[str, torch.Tensor]): a dict of
+                    padding mask
         """
         if alignment_layer is None:
             alignment_layer = self.num_layers - 1
@@ -275,21 +282,26 @@ class CrossChannelTransformerEncoderForASR(FairseqEncoder):
         ]
 
         for idx, layer in enumerate(self.layers):
+            if self.apply_casual_mask:
+                self_attn_mask = self.buffered_future_mask(x_list[0])
+            else:
+                self_attn_mask = None
 
             # need to change to tensor for the checkpoint activation to work
             if isinstance(x_list, list):
                 x_list = torch.stack(x_list) # C x T x B
             x_list, layer_attn_list, _ = layer(
                 x_list,
-                self_attn_padding_mask=self_attn_padding_mask
+                self_attn_padding_mask=self_attn_padding_mask,
+                self_attn_mask=self_attn_mask
             )
 
             inner_states.append(
                 {channel: x_list[i] for i, channel in enumerate(self.channels)}
-            ) # remove???
+            )
             if idx == alignment_layer and all(
                 layer_attn is not None for layer_attn in layer_attn_list
-            ):  # remove???
+            ):
                 attn = {
                     channel: layer_attn_list[i].float().to(x_list[0])
                     for i, channel in enumerate(self.channels)
@@ -322,7 +334,7 @@ class CrossChannelTransformerEncoderForASR(FairseqEncoder):
 
         x = {channel: x_list[i] for i, channel in enumerate(self.channels)}
 
-        return x, {"attn": [attn], "inner_states": inner_states, "padding_mask": self_attn_padding_mask}
+        return x, {"attn": [attn], "inner_states": inner_states, "self_attn_mask": self_attn_mask, "padding_mask": self_attn_padding_mask}
     
     def output_layer(self, features):
         """Project features to the vocabulary size.
@@ -334,10 +346,23 @@ class CrossChannelTransformerEncoderForASR(FairseqEncoder):
             Dict[str, torch.Tensor]: the output class of shape
         """
 
-        # TODO should I have softmax
         return {
             channel: self.output_projection(channel_features) for channel, channel_features in features.items()
         }
+
+    def buffered_future_mask(self, tensor):
+        dim = tensor.size(0)
+        # self._future_mask.device != tensor.device is not working in TorchScript. This is a workaround.
+        if (
+            self._future_mask.size(0) == 0
+            or (not self._future_mask.device == tensor.device)
+            or self._future_mask.size(0) < dim
+        ):
+            self._future_mask = torch.triu(
+                utils.fill_with_neg_inf(torch.zeros([dim, dim])), 1
+            )
+        self._future_mask = self._future_mask.to(tensor)
+        return self._future_mask[:dim, :dim]
 
 
 if __name__ == "__main__":
