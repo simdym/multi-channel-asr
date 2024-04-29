@@ -40,8 +40,11 @@ class SpeechDLMForASRTaskConfig(FairseqDataclass):
     channels: str = field(
         default="0,1", metadata={"help": "channel names to use for the model"}
     )
-    append_bos_token: Optional[bool] = field(
+    prepend_bos_token: Optional[bool] = field(
         default=False, metadata={"help": "prepend beginning of sentence token (<s>)"}
+    ) # Remove this?
+    prepend_token: Optional[str] = field(
+        default="eos", metadata={"help": "prepend token to source sequences"}
     )
     max_target_positions: Optional[int] = field(
         default=None, metadata={"help": "max number of tokens in the target sequence"}
@@ -73,13 +76,6 @@ class SpeechDLMForASRTask(FairseqTask):
         output_dicts (~fairseq.data.Dictionary): the dictionaries
             for the output of each channel of the SpeechDLM model.
     """
-    """@staticmethod
-    def add_args(parser):
-        parser.add_argument('--data', type=str, default=".",
-                            help='Description of my custom argument')
-        parser.add_argument('--input-dict-path', type=str, default=".")
-        parser.add_argument('--output-dict-path', type=str, default=".")
-        parser.add_argument('--channels', type=str, default="0,1")"""
 
     def __init__(self, args, input_dict, output_dict):
         super().__init__(args)
@@ -130,24 +126,6 @@ class SpeechDLMForASRTask(FairseqTask):
             data_path=split_path,
             channels=self.channels,
             src_dict=self.input_dict,
-            tgt_dict=self.output_dict
+            tgt_dict=self.output_dict,
+            prepend_token=self.args.prepend_token,
         )
-
-if __name__ == "__main__":
-    import fairseq.tasks as tasks
-    print("------------", tasks.TASK_REGISTRY["speech_dlm_for_asr_task"])
-
-    data_path = "/localhome/studenter/simendym/FisherUnitSlices/train"
-
-    config = SpeechDLMForASRTaskConfig(
-        data="/localhome/studenter/simendym/FisherUnitSlices",
-        input_dict_path="model_files/dict.unitA.txt",
-        output_dict_path="model_files/dict.ltr.txt",
-        add_bos_token=False,
-        max_target_positions=1024
-    )
-
-    task = SpeechDLMForASRTask.setup_task(config)
-    dataset = task.load_dataset("train")
-
-    print(len(dataset))

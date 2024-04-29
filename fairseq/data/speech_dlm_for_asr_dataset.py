@@ -184,10 +184,11 @@ class SpeechDLMForASRDataset(FairseqDataset):
     @staticmethod
     def from_jsons(
         args,
-        data_path,
-        channels,
-        src_dict,
-        tgt_dict
+        data_path: str,
+        channels: List[str],
+        src_dict: Dictionary,
+        tgt_dict: Dictionary,
+        prepend_token: Optional[str]=None
     ):
         json_paths = glob.glob(os.path.join(data_path, "*.json"))
 
@@ -238,13 +239,16 @@ class SpeechDLMForASRDataset(FairseqDataset):
                 src_elements,
                 src_dict,
                 tokenizer_function=tokenize_line,
-                replace_spaces_with=None
+                replace_spaces_with=None,
+                prepend_token=prepend_token
             )
+
             tgt_dataset = JsonDataset(
                 tgt_elements,
                 tgt_dict,
                 tokenizer_function=tokenize_characters,
-                replace_spaces_with="|"
+                replace_spaces_with="|",
+                prepend_token=None
             )
 
             # Create wrapper LanguagePairDataset from JSON datasets
@@ -256,7 +260,7 @@ class SpeechDLMForASRDataset(FairseqDataset):
                 tgt_sizes=tgt_dataset.sizes,
                 tgt_dict=tgt_dict,
                 shuffle=False,
-                append_bos=args.append_bos_token
+                append_bos=False
             )
 
         return SpeechDLMForASRDataset(
@@ -289,7 +293,8 @@ class JsonDataset(torch.utils.data.Dataset):
             data: List[JsonElement],
             vocab_dict: Dictionary,
             tokenizer_function=tokenize_line,
-            replace_spaces_with:Optional[str]=None
+            replace_spaces_with:Optional[str]=None,
+            prepend_token: Optional[str]=None
         ):
         """Dataset for loading from JSON files.
 
@@ -305,6 +310,15 @@ class JsonDataset(torch.utils.data.Dataset):
         self.vocab_dict = vocab_dict
         self.tokenizer_function = tokenizer_function
         self.replace_spaces_with = replace_spaces_with
+
+        if prepend_token == "eos":
+            self.prepend_token = vocab_dict.eos()
+        elif prepend_token == "bos":
+            self.prepend_token = vocab_dict.bos()
+        elif prepend_token == "pad" or prepend_token == "unk":
+            raise ValueError(f"Prepend token {prepend_token} is not allowed")
+        else:
+            self.prepend_token = prepend_token
                 
     def __len__(self):
         return len(self.data)
@@ -318,6 +332,10 @@ class JsonDataset(torch.utils.data.Dataset):
         # Replace spaces if specified
         if self.replace_spaces_with is not None:
             content = content.replace(" ", self.replace_spaces_with)
+        
+        # Prepend token if specified
+        if self.prepend_token is not None:
+            content = torch.cat(content.new([self.prepend_token]), content) # (Cast prepend_token to same type as content tensor with new() method)
 
         # Tokenize the content        
         return self.vocab_dict.encode_line(
@@ -333,29 +351,3 @@ class JsonDataset(torch.utils.data.Dataset):
     @property
     def sizes(self):
         return [d.size for d in self.data]
-    
-
-
-if __name__ == "__main__":
-    src_dict_path="model_files/dict.unitA.txt"
-    tgt_dict_path="model_files/dict.ltr.txt"
-
-    src_dict = Dictionary.load(src_dict_path)
-    tgt_dict = Dictionary.load(tgt_dict_path)
-
-    dataset = SpeechDLMForASRDataset.from_jsons(
-        data_path="/localhome/studenter/simendym/FisherUnitSlices/train",
-        src_dict=src_dict,
-        tgt_dict=tgt_dict,
-        shuffle=True
-    )
-
-    print(len(dataset))
-
-    for i in range(1):
-        print(dataset[i].keys())
-        print(dataset[i]["source"].keys())
-
-        print(dataset[i]["target"]["0"])
-        print(dataset[i]["target_length"]["0"])
-        print(dataset[i]["target"]["0"].size())

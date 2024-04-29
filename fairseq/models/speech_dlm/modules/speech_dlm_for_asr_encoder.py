@@ -290,6 +290,7 @@ class CrossChannelTransformerEncoderForASR(FairseqEncoder):
             # need to change to tensor for the checkpoint activation to work
             if isinstance(x_list, list):
                 x_list = torch.stack(x_list) # C x T x B
+                
             x_list, layer_attn_list, _ = layer(
                 x_list,
                 self_attn_padding_mask=self_attn_padding_mask,
